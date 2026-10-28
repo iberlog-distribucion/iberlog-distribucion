@@ -65,7 +65,7 @@ body{background:var(--bg);color:var(--ink);font-family:var(--body);overflow:hidd
 
 <canvas id="c" aria-label="Modelo 3D del almacén regional de Iberlog"></canvas>
 
-<section class="block sheet" id="block" aria-label="Datos del proyecto">
+<section class="block sheet" id="block" aria-label="Datos del proyecto" hidden style="display:none">
   <div class="hd"><div><b>Iberlog Distribución, S. L.</b><span>Almacén regional · Layout en I</span></div><button id="b-block" aria-expanded="true">Datos</button></div>
   <dl>
     <dt>Proyecto</dt><dd>Nave logística · zona centro</dd>
@@ -79,7 +79,7 @@ body{background:var(--bg);color:var(--ink);font-family:var(--body);overflow:hidd
   </dl>
 </section>
 
-<aside class="legend sheet" aria-label="Leyenda">
+<aside class="legend sheet" aria-label="Leyenda" hidden style="display:none">
   <h2>Leyenda</h2>
   <span><i style="background:var(--in)"></i>Flujo de entrada</span>
   <span><i style="background:var(--out)"></i>Salida · serpentina de picking</span>
@@ -95,7 +95,7 @@ body{background:var(--bg);color:var(--ink);font-family:var(--body);overflow:hidd
 </aside>
 
 <div class="walkhint sheet" id="walkhint" hidden>Modo paseo · ↑ ↓ avanzar · ← → girar · arrastra para mirar · Mayús para ir rápido · Esc para salir</div>
-<div class="pad" id="pad" hidden>
+<div class="pad" id="pad" title="Caminar por la nave">
   <button data-k="f" aria-label="Avanzar">▲</button><button data-k="l" aria-label="Girar a la izquierda">◀</button><button data-k="b" aria-label="Retroceder">▼</button><button data-k="r" aria-label="Girar a la derecha">▶</button>
 </div>
 <div id="load"><span class="sheet" id="loadtxt">Cargando el modelo 3D…</span></div>
@@ -119,7 +119,7 @@ body{background:var(--bg);color:var(--ink);font-family:var(--body);overflow:hidd
     </div>
     <div class="grp" role="group" aria-label="Capas"><em>Capas</em>
       <button id="t-maqueta" aria-pressed="false">Maqueta</button>
-      <button id="t-cotas" aria-pressed="true">Cotas</button>
+      <button id="t-cotas" aria-pressed="false">Cotas</button>
       <button id="t-roof" aria-pressed="false">Cubierta</button>
       <button id="t-walls" aria-pressed="true">Paredes</button>
       <button id="t-abc" aria-pressed="true">ABC</button>
@@ -268,10 +268,15 @@ async function loadModel() {
           if (kind === "reach") { lo = 31 - 39.5; hi = 31 - 18.5; }
           else if (kind === "cb") { lo = 31 - (y > 30 ? 57 : 12); hi = 31 - (y > 30 ? 49.5 : 2.5); }
           else { axis = "x"; lo = vp.x - 6; hi = vp.x + 6; }
-          movers.push({ parts, axis, lo, hi, p0: axis === "x" ? vp.x : vp.z, fix: axis === "x" ? vp.z : vp.x, u: (n++) * 1.7, sp: kind === "reach" ? .09 : .12 });
+          if (vp.x + 55 < 22 && 31 - vp.z < 9) continue;   // aparcadas en el parking de carretillas
+          movers.push({ kind, vp: vp.clone(), parts, axis, lo, hi, p0: axis === "x" ? vp.x : vp.z, fix: axis === "x" ? vp.z : vp.x, u: (n++) * 1.7, sp: kind === "reach" ? .09 : .12, riders: [] });
         }
       });
-      setupPeople(g.scene);
+      movers.forEach(o => { const m = o.parts[0].base.clone().premultiply(o.parts[0].m.matrixWorld), q = new THREE.Quaternion(); m.decompose(new THREE.Vector3(), q, new THREE.Vector3());
+        const f = new THREE.Vector3(0, 0, 1).applyQuaternion(q); o.fwd = f; });
+      window.__mv = movers.map(o => [o.kind, +(o.vp.x + 55).toFixed(1), +(31 - o.vp.z).toFixed(1), o.axis, +o.fwd.x.toFixed(2), +o.fwd.z.toFixed(2), o.parts.length]);
+      { const res = []; g.scene.traverse(o => { if (!o.isMesh) return; const bb = new THREE.Box3().setFromObject(o), c = bb.getCenter(new THREE.Vector3()); const X = c.x + 55, Y = 31 - c.z; if (Math.hypot(X - 42, Y - 46.3) < 2.2) res.push([o.name, o.isInstancedMesh ? o.count : 1, +X.toFixed(1), +Y.toFixed(1), +(c.y - F).toFixed(2), (Array.isArray(o.material) ? o.material[0] : o.material).name]); }); window.__wr = res; }
+      setupPeople(g.scene); fixSigns(g.scene); setupWrapper(inst);
       document.getElementById("load").hidden = true;
     }, () => { txt.textContent = "No se ha podido cargar el modelo. Recarga la página."; });
   } catch (e) { txt.textContent = "No se ha podido cargar el modelo. Recarga la página."; }
@@ -281,22 +286,77 @@ const roof = new THREE.Group(); roof.visible = false; scene.add(roof);
 fetchText("cubierta.txt").then(b64 => { const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   new GLTFLoader().parse(bin.buffer, "", g => { g.scene.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); roof.add(g.scene); }); }).catch(() => {});
 const T4 = new THREE.Matrix4();
-function moverAt(o) { return (o.lo + o.hi) / 2 + (o.hi - o.lo) / 2 * Math.sin(o.u); }
-function obstacleAhead(o) {
-  const cur = moverAt(o), dir = Math.sign(Math.cos(o.u)) || 1;
-  const pts = people.map(q => q.pos); if (walk) pts.push(camera.position);
-  for (const q of pts) {
-    const along = (o.axis === "x" ? q.x : q.z) - cur, lat = Math.abs((o.axis === "x" ? q.z : q.x) - o.fix);
-    if (lat < 1.7 && along * dir > 0 && along * dir < 3.8) return true;
-  }
+// carretillas: van a un punto, frenan, se paran a cargar o descargar y siguen; nunca se chocan
+const VMAX = { reach: 1.4, cb: 2.0, pj: 1.0 }, ACC = .7;
+function moverAt(o) { return o.s; }
+function newTarget(o, away) {
+  const lo = Math.min(o.lo, o.hi), hi = Math.max(o.lo, o.hi); let t = o.s;
+  for (let k = 0; k < 20; k++) { t = lo + Math.random() * (hi - lo); if (Math.abs(t - o.s) > 3.5 && (!away || Math.sign(t - o.s) === away)) break; }
+  o.tg = t;
+}
+const vehXZ = o => o.axis === "x" ? [o.s, o.fix] : [o.fix, o.s];
+function blockedAhead(o, dir) {
+  const look = 1.6 + o.v * o.v / (2 * ACC), [x, z] = vehXZ(o);
+  const test = (px, pz, len, wid) => { const dx = px - x, dz = pz - z, along = (o.axis === "x" ? dx : dz) * dir, lat = Math.abs(o.axis === "x" ? dz : dx);
+    return lat < wid && along > 0 && along < look + len; };
+  for (const q of people) if (test(q.pos.x, q.pos.z, 1.9, 1.5)) return true;
+  if (walk && test(camera.position.x, camera.position.z, 1.9, 1.5)) return true;
+  for (const m of movers) { if (m === o) continue; const [mx, mz] = vehXZ(m); if (test(mx, mz, 3.4, 2.3)) return true; }
   return false;
 }
 function updateMovers(t, dt) {
   movers.forEach(o => {
-    if (!obstacleAhead(o)) o.u += dt * o.sp;
-    const delta = moverAt(o) - o.p0;
+    if (o.s === undefined) { const lo = Math.min(o.lo, o.hi), hi = Math.max(o.lo, o.hi); o.s = Math.max(lo, Math.min(hi, o.p0)); o.v = 0; o.wait = Math.random() * 4; o.stuck = 0; newTarget(o); }
+    if (o.wait > 0) o.wait -= dt;
+    else {
+      const dir = Math.sign(o.tg - o.s) || 1, dist = Math.abs(o.tg - o.s);
+      if (blockedAhead(o, dir)) { o.v = Math.max(0, o.v - 3 * dt); o.stuck += dt; if (o.stuck > 3) { o.stuck = 0; newTarget(o, -dir); } }
+      else { o.stuck = 0; const vt = Math.min(VMAX[o.kind] || 1, Math.sqrt(2 * ACC * dist)); o.v += Math.max(-3 * dt, Math.min(ACC * dt, vt - o.v)); }
+      o.s += dir * Math.min(o.v * dt, dist);
+      if (Math.abs(o.tg - o.s) < .03) { o.s = o.tg; o.v = 0; o.wait = 3 + Math.random() * 4; newTarget(o); }
+    }
+    const delta = o.s - o.p0;
+    o.riders.forEach(r => { if (o.axis === "x") r.position.x = r.userData.bx + delta; else r.position.z = r.userData.bz + delta; });
     o.parts.forEach(a => { T4.makeTranslation(o.axis === "x" ? delta : 0, 0, o.axis === "z" ? delta : 0); a.m.setMatrixAt(a.i, T4.multiply(a.base)); a.m.instanceMatrix.needsUpdate = true; });
   });
+}
+
+// ---------- retractiladora de palés en movimiento: mesa giratoria, carro de film que sube y baja y film que va envolviendo la carga
+const WR = { x: 42.5, y: 46.3 }; let wrap = null;
+function setupWrapper(inst) {
+  const tmp = new THREE.Matrix4(), p = new THREE.Vector3(), zero = new THREE.Matrix4().makeScale(0, 0, 0);
+  inst.forEach(m => { for (let j = 0; j < m.count; j++) { m.getMatrixAt(j, tmp); p.setFromMatrixPosition(tmp).applyMatrix4(m.matrixWorld);
+    if (Math.hypot(p.x + 55 - WR.x, 31 - p.z - WR.y) < .9 && p.y < F + 3) { m.setMatrixAt(j, zero); m.instanceMatrix.needsUpdate = true; } } });
+  const g = new THREE.Group(); g.position.copy(B(WR.x, WR.y, .12)); scene.add(g);
+  const turn = new THREE.Group(); g.add(turn);
+  const disc = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, .05, 40), new THREE.MeshStandardMaterial({ color: 0x8d969e, metalness: .6, roughness: .35 })); disc.position.y = .02; turn.add(disc);
+  for (let k = 0; k < 6; k++) { const r = new THREE.Mesh(new THREE.BoxGeometry(2.3, .012, .05), new THREE.MeshStandardMaterial({ color: 0x5f676e })); r.rotation.y = k * Math.PI / 6; r.position.y = .05; turn.add(r); }
+  const wood = new THREE.MeshStandardMaterial({ color: 0xc9a46a, roughness: .9 });
+  [-.5, 0, .5].forEach(x => { const b = new THREE.Mesh(new THREE.BoxGeometry(.1, .1, .8), wood); b.position.set(x, .1, 0); turn.add(b); });
+  const top = new THREE.Mesh(new THREE.BoxGeometry(1.2, .03, .8), wood); top.position.y = .165; turn.add(top);
+  const KR = [0xc59a68, 0xb88a58, 0xd1ab7c, 0xe7e2d8, 0xbe9262];
+  for (let l = 0; l < 4; l++) for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(.39, .32, .39), new THREE.MeshStandardMaterial({ color: KR[(l * 7 + i * 3 + j) % KR.length], roughness: .85 }));
+    b.position.set(-.4 + i * .4, .18 + .165 + l * .33, -.2 + j * .4); b.castShadow = true; turn.add(b); }
+  const film = new THREE.Mesh(new THREE.CylinderGeometry(.75, .75, 1, 40, 1, true), new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: .32, roughness: .15, side: THREE.DoubleSide, depthWrite: false }));
+  film.scale.set(1, .001, 1); turn.add(film);
+  const mast = new THREE.Mesh(new THREE.BoxGeometry(.2, 2.3, .2), new THREE.MeshStandardMaterial({ color: 0xeef0f2 })); mast.position.set(-1.6, 1.15, 0); g.add(mast);
+  const car = new THREE.Group(); car.position.set(-1.25, .4, 0); g.add(car);
+  car.add(new THREE.Mesh(new THREE.BoxGeometry(.3, .45, .4), new THREE.MeshStandardMaterial({ color: 0x2457b5, roughness: .4 })));
+  const roll = new THREE.Mesh(new THREE.CylinderGeometry(.06, .06, .5, 16), new THREE.MeshStandardMaterial({ color: 0xe9f1f7, transparent: true, opacity: .85 })); roll.position.set(.2, 0, 0); car.add(roll);
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(.06, 12, 10), new THREE.MeshBasicMaterial({ color: 0x31d06a })); lamp.position.set(-1.6, 2.38, 0); g.add(lamp);
+  wrap = { turn, film, car, lamp, t0: 0 };
+}
+function updateWrapper(t, dt) {
+  if (!wrap) return;
+  const C = 24, k = t % C, lo = .35, hi = 1.65;
+  let h, spin = true;
+  if (k < 12) h = lo + (hi - lo) * k / 12; else if (k < 20) h = hi - (hi - lo) * (k - 12) / 8; else { h = lo; spin = false; }
+  wrap.car.position.y = h;
+  if (spin) wrap.turn.rotation.y += dt * 1.25;
+  const fh = k < 12 ? Math.max(.001, h - .18) : k < 20 ? hi - .18 + .14 : (k < 22 ? hi - .04 : .001);
+  wrap.film.scale.y = fh; wrap.film.position.y = .2 + fh / 2;
+  wrap.lamp.material.color.setHex(spin ? 0x31d06a : 0xf2b705);
 }
 
 // ---------- señalización: pasillos de máquinas, pasarela peatonal, rutas de expedición y fichaje
@@ -332,8 +392,10 @@ const DOCKS2 = [36.8, 40.8, 48.0, 52.0, 59.2, 63.2];
 DOCKS2.forEach((x, i) => { floorText("RUTA " + (i + 1), x, 55, 2.9, .9, "#f2c200", Math.PI); sign(["RUTA " + (i + 1), "Muelle S" + (i + 1)], x, 54.6, 4.4, 2.8, "#c4551a", Math.PI); });
 
 // seguridad: extintores (máx. 15 m de recorrido) y señalización de evacuación fotoluminiscente
-const EXT = [[0.9, 10], [0.9, 40], [0.9, 56], [99.1, 10], [99.1, 40], [99.1, 56],
-  [20, 15.8], [50, 15.8], [80, 15.8], [35, 30.3], [65, 30.3], [20, 43.4], [50, 43.4], [80, 43.4]];
+const EXT = [[0.9, 10], [0.9, 40], [0.9, 56], [99.1, 10], [99.1, 40], [99.1, 56]];
+// extintores en las cabeceras de las estanterías de almacenaje (uno de cada tres módulos, en las cuatro cabeceras)
+const RACK_HEADS = [];
+[10.8, 27.6, 44.4, 61.2, 78.0, 94.15].forEach(x => [[17.5, -1], [28.8, 1], [31.8, -1], [40.3, 1]].forEach(([y, d]) => RACK_HEADS.push([x, y, d])));
 const extMat = new THREE.MeshStandardMaterial({ color: 0xc81e1e, roughness: .35, metalness: .2 });
 const extGeo = new THREE.CylinderGeometry(.12, .12, .62, 14), postGeo = new THREE.BoxGeometry(.09, 1.9, .09);
 const postMat = new THREE.MeshStandardMaterial({ color: 0xc81e1e, roughness: .6 });
@@ -344,6 +406,13 @@ EXT.forEach(([x, y]) => {
   const e = new THREE.Mesh(extGeo, extMat); e.position.copy(B(x + (x < 5 ? .2 : x > 95 ? -.2 : 0), y + (x > 5 && x < 95 ? .2 : 0), .55)); sen.add(e);
   const pl = new THREE.Mesh(new THREE.PlaneGeometry(.55, .55), new THREE.MeshBasicMaterial({ map: extPlate, side: THREE.DoubleSide }));
   pl.position.copy(B(x, y, 2.15)); pl.rotation.y = x < 5 ? Math.PI / 2 : x > 95 ? -Math.PI / 2 : 0; sen.add(pl);
+});
+const brkMat = new THREE.MeshStandardMaterial({ color: 0x2b2f33, roughness: .5 });
+RACK_HEADS.forEach(([x, y, d]) => {
+  const brk = new THREE.Mesh(new THREE.BoxGeometry(.3, .06, .16), brkMat); brk.position.copy(B(x, y + d * .08, 1.28)); sen.add(brk);
+  const e = new THREE.Mesh(extGeo, extMat); e.position.copy(B(x, y + d * .16, .95)); sen.add(e);
+  const pl = new THREE.Mesh(new THREE.PlaneGeometry(.45, .45), new THREE.MeshBasicMaterial({ map: extPlate, side: THREE.DoubleSide }));
+  pl.position.copy(B(x, y + d * .04, 1.75)); pl.rotation.y = d < 0 ? 0 : Math.PI; sen.add(pl);
 });
 const evacTex = dir => canvasTex(512, 160, (g, W, H) => { g.fillStyle = "#1e9e4a"; g.fillRect(0, 0, W, H); g.fillStyle = "#e9ffd9"; g.textAlign = "center"; g.textBaseline = "middle";
   g.font = "700 76px 'Archivo Narrow',Arial"; g.fillText(dir < 0 ? "← SALIDA" : "SALIDA →", W / 2, H / 2 + 4); });
@@ -376,9 +445,16 @@ const taper = (rt, rb, h) => new THREE.CylinderGeometry(rt, rb, h, 16);
 function humanGeo(o) {
   const L = [], f = o.female, sk = o.skin, sh = o.shirt;
   const shW = f ? .175 : .2, hipW = f ? .17 : .16;
+  const LL = [];
   [-1, 1].forEach(d => {
-    part(L, G.box, "#262626", d * .1, .045, .035, .11, .09, .27);                       // calzado de seguridad
-    part(L, taper(.072, .058, .82), o.pants, d * .095, .49, 0);                          // piernas
+    if (o.seated) {
+      part(LL, G.box, "#262626", d * .1, .045, .42, .11, .09, .27);
+      part(LL, taper(.06, .052, .44), o.pants, d * .095, .3, .4);                       // espinillas
+      part(LL, taper(.075, .065, .44), o.pants, d * .095, .53, .2, 1, 1, 1, Math.PI / 2, 0); // muslos
+    } else {
+      part(LL, G.box, "#262626", d * .1, .045, .035, .11, .09, .27);                     // calzado de seguridad
+      part(LL, taper(.072, .058, .82), o.pants, d * .095, .49, 0);                       // piernas
+    }
     part(L, taper(.058, .05, .3), sh, d * (shW + .02), 1.33, 0, 1, 1, 1, 0, d * .07);    // brazo
     part(L, taper(.05, .043, .27), o.short ? sk : sh, d * (shW + .035), 1.05, .01, 1, 1, 1, 0, d * .03); // antebrazo
     part(L, G.sph, sk, d * (shW + .04), .87, .015, .045, .06, .04);                      // mano
@@ -405,7 +481,8 @@ function humanGeo(o) {
   }
   if (o.beard) part(L, G.beard, hc, 0, 1.675, .004, .108, .125, .116);
   if (o.boss) part(L, G.box, "#1d2024", .2, 1.02, .16, .17, .23, .015, -.9, 0);         // tableta
-  const geo = BufferGeometryUtils.mergeGeometries(L); geo.scale(o.h, o.h, o.h); geo.computeBoundingSphere(); return geo;
+  if (o.seated) L.forEach(g => g.translate(0, -.4, 0));
+  const geo = BufferGeometryUtils.mergeGeometries(L.concat(LL)); geo.scale(o.h, o.h, o.h); geo.computeBoundingSphere(); return geo;
 }
 function onPath(x, z) {
   for (const o of movers) {
@@ -437,10 +514,15 @@ function setupPeople(root) {
     for (let i = 0; i < body.count; i++) {
       body.getMatrixAt(i, tmp); tmp.premultiply(body.matrixWorld); tmp.decompose(v, q4, sc);
       fz.set(0, 0, 1).applyQuaternion(q4);
-      people.push({ pos: v.clone(), yaw: Math.atan2(fz.x, fz.z), vest, boss: null });
+      people.push({ pos: v.clone(), yaw: Math.atan2(fz.x, fz.z), vest, boss: null, base: v.y });
     }
     parts.forEach(pm => pm.visible = false);
   });
+  // conductores: la persona que está sobre una carretilla viaja con ella
+  people.forEach(q => { let best = null, bd = 1.6;
+    movers.forEach(o => { const d = Math.hypot(q.pos.x - o.vp.x, q.pos.z - o.vp.z); if (d < bd && !o.riders.length) { bd = d; best = o; } });
+    if (best && q.pos.y > F + .12) q.driver = best; });
+  const drivers = people.filter(q => q.driver); for (let i = people.length - 1; i >= 0; i--) if (people[i].driver) people.splice(i, 1);
   const move = (q, X, Y) => { const p = B(X, Y, 0); q.pos.x = p.x; q.pos.z = p.z; };
   const free = people.slice();
   BOSS.forEach(b => { const tgt = B(b.at[0], b.at[1]); free.sort((p, q) => p.pos.distanceTo(tgt) - q.pos.distanceTo(tgt)); const q = free.shift(); q.boss = b; move(q, b.at[0], b.at[1]); });
@@ -459,6 +541,49 @@ function setupPeople(root) {
     const m = new THREE.Mesh(humanGeo(o), humMat); m.position.set(q.pos.x, F, q.pos.z); m.rotation.y = q.yaw; m.castShadow = true; hum.add(m);
     if (q.boss) { const l = labelSprite(q.boss.t, q.boss.s); l.position.set(q.pos.x, F + 2.5, q.pos.z); lbls.add(l); }
   });
+  drivers.forEach((q, k) => {
+    const seated = q.driver.kind === "cb", female = k % 3 === 1;
+    const o = { female, seated, skin: SKIN[(k * 3 + 5) % SKIN.length], hairC: HAIRC[(k * 2 + 3) % HAIRC.length], hair: female ? "coleta" : ["corto", "rapado", "calvo"][k % 3],
+      shirt: SHIRT[(k + 2) % SHIRT.length], pants: PANTS[(k + 1) % PANTS.length], vest: "#ff7a1a", short: false, beard: !female && k % 2 === 0, boss: false, h: .96 };
+    const m = new THREE.Mesh(humanGeo(o), humMat); m.position.copy(q.pos); m.position.y = q.pos.y - (seated ? .53 : .83); m.rotation.y = q.yaw; m.castShadow = true;
+    m.userData.bx = m.position.x; m.userData.bz = m.position.z; hum.add(m); q.driver.riders.push(m);
+  });
+  window.__drivers = drivers.map(q => [q.driver.kind, +(q.pos.x + 55).toFixed(1), +(31 - q.pos.z).toFixed(1), +(q.pos.y - F).toFixed(2)]);
+}
+
+// ---------- carteles del modelo con texto corregido o que no cabía
+function fitTex(lines, bg, w, h, rel) {
+  const t = canvasTex(w, h, (g) => {
+    g.fillStyle = bg; g.fillRect(0, 0, w, h); g.strokeStyle = "#fff"; g.globalAlpha = .35; g.lineWidth = Math.max(3, h * .04); g.strokeRect(h * .06, h * .06, w - h * .12, h * .12 > 0 ? h - h * .12 : h); g.globalAlpha = 1;
+    g.fillStyle = "#fff"; g.textAlign = "center"; g.textBaseline = "middle";
+    const n = lines.length, ys = n === 1 ? [.53] : [.38, .76];
+    lines.forEach((t, i) => { let fs = h * rel[i]; do { g.font = `700 ${fs}px 'Archivo Narrow','Arial Narrow',Arial,sans-serif`; fs -= 2; } while (g.measureText(t).width > w * .88); g.fillText(t, w / 2, h * ys[i]); });
+  });
+  return t;
+}
+const SIGNFIX = [
+  { at: [28.25, 51.6, 6.4], r: 1.2, lines: ["PACKING", "Embalaje, paletización y retractilado"], bg: "#4b3f72", w: 1024, h: 256, rel: [.5, .2] },
+  { at: [17, 51.9, 3.6], r: 1.2, lines: ["OFICINA", "PREPARACIÓN"], bg: "#1b3f75", w: 640, h: 120, rel: [.42, .36] },
+  { at: [94, 51.9, 3.6], r: 1.2, lines: ["OFICINA", "EXPEDICIÓN"], bg: "#1b3f75", w: 640, h: 120, rel: [.42, .36] },
+  { at: [94, 8.1, 3.6], r: 1.2, lines: ["OFICINA", "RECEPCIÓN"], bg: "#1b3f75", w: 640, h: 120, rel: [.42, .36] },
+  { at: [83, 51.9, 3.6], r: 1.2, lines: ["CONTROL DE STOCK"], bg: "#1b3f75", w: 640, h: 120, rel: [.5] },
+  { at: [6, 9.1, 3.6], r: 1.2, lines: ["CARGA DE BATERÍAS"], bg: "#1b3f75", w: 640, h: 120, rel: [.5] },
+];
+function fixSigns(root) {
+  const bb = new THREE.Box3(), c = new THREE.Vector3(), sz = new THREE.Vector3(), done = new Map();
+  root.traverse(o => {
+    if (!o.isMesh || o.isInstancedMesh) return; const mt = Array.isArray(o.material) ? o.material[0] : o.material; if (!mt || !mt.map) return;
+    bb.setFromObject(o); bb.getCenter(c); bb.getSize(sz); const X = c.x + 55, Y = 31 - c.z, H = c.y - F;
+    if (sz.y > 2) return;
+    let spec = SIGNFIX.find(f => Math.hypot(X - f.at[0], Y - f.at[1]) < f.r && Math.abs(H - f.at[2]) < .5);
+    if (!spec && Math.abs(H - .75) < .2 && sz.y > .4 && sz.y < .65 && Math.max(sz.x, sz.z) > .7 && Math.max(sz.x, sz.z) < 1.1)
+      spec = { key: "inv", lines: ["INVENTARIO", "En curso"], bg: "#3d4f8a", w: 512, h: 300, rel: [.3, .2] };
+    if (!spec) return;
+    const k = spec.key || spec.lines.join("|");
+    if (!done.has(k)) { const m2 = mt.clone(); m2.map = fitTex(spec.lines, spec.bg, spec.w, spec.h, spec.rel); m2.map.colorSpace = THREE.SRGBColorSpace; done.set(k, m2); }
+    o.material = done.get(k);
+  });
+  window.__signs = [...done.keys()];
 }
 
 // ---------- modo paseo: a la altura de una persona, sin atravesar estanterías
@@ -472,15 +597,25 @@ function blocked(px, pz) {
 let walk = false, yaw = 0, pitch = 0, cotasWas = null; const keys = {};
 function setWalk(on, at) {
   walk = on; stopTour(); controls.enabled = !on; anim = null;
-  document.getElementById("t-walk").setAttribute("aria-pressed", on); document.getElementById("pad").hidden = !on; document.getElementById("walkhint").hidden = !on;
+  document.getElementById("t-walk").setAttribute("aria-pressed", on); document.getElementById("walkhint").hidden = !on;
   if (on) { if (cotasWas === null) { cotasWas = cotas.visible; cotas.visible = false; } const p = at || B(47.2, 14.6, 1.6); camera.position.copy(p); yaw = at && at.yaw !== undefined ? at.yaw : 0; pitch = 0; }
   else { stopAisles(); if (cotasWas !== null) { cotas.visible = cotasWas; cotasWas = null; } go(cur); }
 }
-document.getElementById("t-walk").addEventListener("click", () => setWalk(!walk));
-addEventListener("keydown", e => { if (e.key === "Escape" && walk) setWalk(false); if (aisleRun && e.key !== "Escape") stopAisles(); keys[e.key.toLowerCase()] = true; if (walk && e.key.startsWith("Arrow")) e.preventDefault(); });
+// punto de partida del paseo: donde se está mirando, o el pasillo principal de entrada
+function startHere() {
+  let X = Math.max(2, Math.min(98, controls.target.x + 55)), Y = Math.max(2, Math.min(58, 31 - controls.target.z));
+  X = AX.reduce((m, a) => Math.abs(a - X) < Math.abs(m - X) ? a : m, AX[0]); Y = Math.max(15.6, Math.min(43.4, Y));
+  const p = B(X, Y, 1.6);
+  p.yaw = 0; return p;
+}
+const MOVEK = ["arrowup", "arrowdown", "arrowleft", "arrowright", "w", "a", "s", "d"];
+document.getElementById("t-walk").addEventListener("click", () => setWalk(!walk, walk ? undefined : startHere()));
+addEventListener("keydown", e => { if (e.target && /SELECT|INPUT|TEXTAREA/.test(e.target.tagName)) return;
+  if (!walk && MOVEK.includes(e.key.toLowerCase())) { setWalk(true, startHere()); e.preventDefault(); }
+  if (e.key === "Escape" && walk) setWalk(false); if (aisleRun && e.key !== "Escape") stopAisles(); keys[e.key.toLowerCase()] = true; if (walk && e.key.startsWith("Arrow")) e.preventDefault(); });
 addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
 document.querySelectorAll("#pad button").forEach(b => { const k = "pad" + b.dataset.k;
-  b.addEventListener("pointerdown", e => { keys[k] = true; b.setPointerCapture(e.pointerId); }); ["pointerup", "pointercancel", "pointerleave"].forEach(ev => b.addEventListener(ev, () => keys[k] = false)); });
+  b.addEventListener("pointerdown", e => { if (!walk) setWalk(true, startHere()); keys[k] = true; b.setPointerCapture(e.pointerId); e.stopPropagation(); }); ["pointerup", "pointercancel", "pointerleave"].forEach(ev => b.addEventListener(ev, () => keys[k] = false)); });
 let drag = null;
 canvas.addEventListener("pointerdown", e => { if (walk) drag = { x: e.clientX, y: e.clientY, yaw, pitch }; });
 addEventListener("pointermove", e => { if (walk && drag) { yaw = drag.yaw - (e.clientX - drag.x) * .004; pitch = Math.max(-.9, Math.min(.9, drag.pitch - (e.clientY - drag.y) * .004)); } });
@@ -524,7 +659,7 @@ function updateAisleTour(dt) {
 }
 
 // ---------- cotas generales (estilo plano de arquitectura)
-const cotas = new THREE.Group(); scene.add(cotas);
+const cotas = new THREE.Group(); cotas.visible = false; scene.add(cotas);
 function cotaLabel(text) {
   const t = canvasTex(512, 128, (g, W, H) => { g.fillStyle = "rgba(246,246,243,.92)"; g.fillRect(0, 22, W, 84); g.strokeStyle = "#1d1f22"; g.lineWidth = 3; g.strokeRect(1.5, 23.5, W - 3, 81);
     g.fillStyle = "#1d1f22"; g.font = "500 58px 'IBM Plex Mono',Menlo,monospace"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(text, W / 2, 66); });
@@ -612,7 +747,7 @@ renderer.setAnimationLoop(() => {
     camera.position.lerpVectors(anim.p0, anim.p1, e); controls.target.lerpVectors(anim.t0, anim.t1, e); if (k === 1) anim = null; }
   const dt = Math.min(.05, t - (window.__lt || t)); window.__lt = t; updateWalk(dt);
   if (flows.visible) updateFlows(t);
-  updateMovers(t, dt); updateAisleTour(dt);
+  updateMovers(t, dt); updateAisleTour(dt); updateWrapper(t, dt);
   if (!walk) controls.update(); renderer.render(scene, camera);
 });
 </script>
